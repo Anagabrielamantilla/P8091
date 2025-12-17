@@ -1,16 +1,16 @@
 
 import numpy as np
-
 # Load model
 model_3d = np.load('Gempy\ModelC.npy')
 
 Sucep_Mag_Value = model_3d.copy()/1.
 
-Sucep_Mag_Value[Sucep_Mag_Value==1]=0.00598
+Sucep_Mag_Value[Sucep_Mag_Value==1]=0.00
 Sucep_Mag_Value[Sucep_Mag_Value==2]=0.0044
-Sucep_Mag_Value[Sucep_Mag_Value==3]=0.00755
+Sucep_Mag_Value[Sucep_Mag_Value==3]=-0.00755
 Sucep_Mag_Value[Sucep_Mag_Value==4]=0.0032
-Sucep_Mag_Value[Sucep_Mag_Value==5]=0.014
+Sucep_Mag_Value[Sucep_Mag_Value==5]=-0.014
+
 Sucep_Mag_Value[Sucep_Mag_Value==6]=0.00074
 Sucep_Mag_Value[Sucep_Mag_Value==7]=0.074
 Sucep_Mag_Value[Sucep_Mag_Value==8]=0.0001
@@ -51,14 +51,14 @@ np.savez_compressed(
 
 Density_Value = model_3d.copy()/1.
 
-Density_Value[Density_Value==1]=2.5
-Density_Value[Density_Value==2]=2.75
-Density_Value[Density_Value==3]=2.65
-Density_Value[Density_Value==4]=2.7
-Density_Value[Density_Value==5]=2.6
-Density_Value[Density_Value==6]=2.8
-Density_Value[Density_Value==7]=2.9
-Density_Value[Density_Value==8]=2.6
+Density_Value[Density_Value==1]=-0.25
+Density_Value[Density_Value==2]=0.0
+Density_Value[Density_Value==3]=-0.1
+Density_Value[Density_Value==4]=-0.05
+Density_Value[Density_Value==5]=-0.15
+Density_Value[Density_Value==6]=0.05
+Density_Value[Density_Value==7]=0.15
+Density_Value[Density_Value==8]=0.1
 
 nx, ny, nz = 50,50,50  
 dx, dy, dz = [18735/nx, 20808/ny, 8500/nz]

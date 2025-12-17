@@ -69,3 +69,101 @@ def compute_kernel(cell_centers: np.ndarray,
     kernel = cm * vol_act.unsqueeze(0) * kernel_core
 
     return kernel
+
+# Kernel gravimetria
+
+def calculateKernelGrav(density_contrast_model, mesh, receiver_locations) -> torch.Tensor:
+    def _ensure_tensor_local(x, device="cpu", dtype=torch.float32):
+        if isinstance(x, torch.Tensor):
+            return x.to(device=device, dtype=dtype)
+        return torch.as_tensor(x, device=device, dtype=dtype)
+
+    if isinstance(density_contrast_model, torch.Tensor):
+        device = density_contrast_model.device
+        dtype  = density_contrast_model.dtype
+    else:
+        device = "cpu"
+        dtype  = torch.float32
+
+    rho = _ensure_tensor_local(density_contrast_model, device=device, dtype=dtype).reshape(-1)
+
+    valid_mask = ~torch.isnan(rho)
+    if not valid_mask.any():
+        raise RuntimeError("El modelo no tiene celdas válidas (todas son NaN).")
+
+    centers = _ensure_tensor_local(mesh["cell_centers"], device=device, dtype=dtype)
+    centers_v = centers[valid_mask]
+
+    obs = _ensure_tensor_local(receiver_locations, device=device, dtype=dtype)
+    if obs.ndim != 2:
+        raise ValueError("receiver_locations debe ser 2D.")
+    if obs.shape[1] == 2:
+        obs_xyz = torch.cat([obs, torch.zeros((obs.shape[0], 1), device=device, dtype=dtype)], dim=1)
+    elif obs.shape[1] == 3:
+        obs_xyz = obs
+    else:
+        raise ValueError("receiver_locations debe tener 2 o 3 columnas.")
+
+    G = torch.as_tensor(6.67430e-11, device=device, dtype=dtype)
+
+    dx = _ensure_tensor_local(mesh["dx"], device=device, dtype=dtype)
+    dy = _ensure_tensor_local(mesh["dy"], device=device, dtype=dtype)
+    dz = _ensure_tensor_local(mesh["dz"], device=device, dtype=dtype)
+
+    nC  = centers.shape[0]
+    nCv = centers_v.shape[0]
+
+    def _select_sizes(h):
+        if h.ndim == 0:
+            return h.expand(nCv)
+        if h.ndim == 1 and h.numel() == nC:
+            return h[valid_mask]
+        if h.ndim == 1 and h.numel() == nCv:
+            return h
+        raise ValueError("dx/dy/dz deben ser escalares o vectores tamaño nC (por celda).")
+
+    dx_v = _select_sizes(dx)
+    dy_v = _select_sizes(dy)
+    dz_v = _select_sizes(dz)
+
+    V_v = dx_v * dy_v * dz_v
+    GV8 = G * (V_v / 8.0)
+
+    qx, qy, qz = dx_v / 4.0, dy_v / 4.0, dz_v / 4.0
+
+    signs = torch.tensor(
+        [[+1,+1,+1],[+1,+1,-1],[+1,-1,+1],[+1,-1,-1],
+         [-1,+1,+1],[-1,+1,-1],[-1,-1,+1],[-1,-1,-1]],
+        device=device, dtype=dtype
+    )
+
+    Xc = centers_v[:, 0].unsqueeze(0)
+    Yc = centers_v[:, 1].unsqueeze(0)
+    Zc = centers_v[:, 2].unsqueeze(0)
+
+    sx = obs_xyz[:, 0].unsqueeze(1)
+    sy = obs_xyz[:, 1].unsqueeze(1)
+    sz = obs_xyz[:, 2].unsqueeze(1)
+
+    K = torch.zeros((obs_xyz.shape[0], nCv), device=device, dtype=dtype)
+
+    for s in range(8):
+        ox = (signs[s, 0] * qx).unsqueeze(0)
+        oy = (signs[s, 1] * qy).unsqueeze(0)
+        oz = (signs[s, 2] * qz).unsqueeze(0)
+
+        Xp = Xc + ox
+        Yp = Yc + oy
+        Zp = Zc + oz
+
+        dx_ = sx - Xp
+        dy_ = sy - Yp
+        dz_ = Zp - sz  # Z positivo hacia arriba
+
+        r2 = dx_*dx_ + dy_*dy_ + dz_*dz_
+        inv_r3 = torch.pow(r2, -1.5)
+
+        K = K + (GV8.unsqueeze(0) * dz_ * inv_r3)
+
+    return K
+

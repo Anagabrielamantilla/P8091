@@ -1,6 +1,6 @@
 
-
 import numpy as np
+
 
 # Load model
 model_3d = np.load('Gempy\modelD.npy')
@@ -8,13 +8,14 @@ model_3d = np.load('Gempy\modelD.npy')
 Grav_Value = model_3d.copy()/1.
 
 
-Grav_Value[Grav_Value==1]=2.62
-Grav_Value[Grav_Value==2]=2.78
-Grav_Value[Grav_Value==3]=2.95
-Grav_Value[Grav_Value==4]=2.3
-Grav_Value[Grav_Value==5]=2.26
-Grav_Value[Grav_Value==6]=2.8
-Grav_Value[Grav_Value==7]=2.75
+Grav_Value[Grav_Value==1]=-0.25
+Grav_Value[Grav_Value==2]=0.0
+Grav_Value[Grav_Value==3]=-0.1
+Grav_Value[Grav_Value==4]=-0.05
+Grav_Value[Grav_Value==5]=-0.15
+Grav_Value[Grav_Value==6]=0.05
+Grav_Value[Grav_Value==7]=0.15
+
 
 
 Grav_model = Grav_Value[:,4,:].copy()
@@ -57,13 +58,14 @@ np.savez_compressed(
 Mag_Value = model_3d.copy()/1.
 
 
-Mag_Value[Mag_Value==1]=0.00598
+Mag_Value[Mag_Value==1]=0.00
 Mag_Value[Mag_Value==2]=0.0044
-Mag_Value[Mag_Value==3]=0.00755
+Mag_Value[Mag_Value==3]=-0.00755
 Mag_Value[Mag_Value==4]=0.0032
-Mag_Value[Mag_Value==5]=0.014
+Mag_Value[Mag_Value==5]=-0.014
+
 Mag_Value[Mag_Value==6]=0.00074
-Mag_Value[Mag_Value==7]=0.000774
+Mag_Value[Mag_Value==7]=0.074
 
 
 Mag_model = Mag_Value[:,4,:].copy()
