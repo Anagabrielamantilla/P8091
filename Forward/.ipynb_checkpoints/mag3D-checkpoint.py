@@ -1,7 +1,11 @@
 import torch, math
 import numpy as np
 
-def mag3D_8091(kernel, m):
-    # extraer device del m
-    # asignar al tensor kernel el device de m
-    return (kernel * m.unsqueeze(0)).sum(dim=1) * 1e9
+def mag3D_8091(K: torch.Tensor, chi_active: torch.Tensor):
+    
+    if K.ndim != 2:
+        raise ValueError("K debe ser 2D (nObs,nCv).")
+    if chi_active.ndim != 1:
+        chi_active = chi_active.reshape(-1)
+        
+    return K @ chi_active

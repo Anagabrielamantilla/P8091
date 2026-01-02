@@ -1,76 +1,182 @@
-import torch, math
+import math
 import numpy as np
+import torch
+from geoana.kernels import prism_fzz, prism_fzx, prism_fzy
 
-def get_B0_and_m(model: np.ndarray,
-                 device: torch.device,
-                 dtype: torch.dtype,
-                 I_deg: float =90.0,
-                 D_deg: float=0.0,
-                 B0_nT: float =50000.0):
+def geomagnetic_field(
+    I_deg: float,
+    D_deg: float,
+    amplitude_nT: float,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
+):
 
-    model_t = torch.from_numpy(model).to(device, dtype)
+    device = torch.device(device)
+    I = torch.deg2rad(torch.tensor(I_deg, device=device, dtype=dtype))
+    D = torch.deg2rad(torch.tensor(D_deg, device=device, dtype=dtype))
 
-    active = ~torch.isnan(model_t) & (model_t != 0)
-    k_act = model_t[active]
+    B0_vec_nT = torch.tensor(float(amplitude_nT), device=device, dtype=dtype) * torch.stack(
+        [
+            torch.cos(I) * torch.sin(D),   # x
+            torch.cos(I) * torch.cos(D),   # y
+            -torch.sin(I),                 # z
+        ]
+    )
 
-    B0_mag = torch.as_tensor(B0_nT * 1e-9, device=device, dtype=dtype)
+    B0_unit = B0_vec_nT / torch.linalg.norm(B0_vec_nT)
+    return B0_vec_nT, B0_unit
 
-    I = torch.deg2rad(torch.as_tensor(I_deg, device=device, dtype=dtype))
-    D = torch.deg2rad(torch.as_tensor(D_deg, device=device, dtype=dtype))
+def calculateKernelMag(
+    model,
+    cell_centers,
+    receiver_locations,
+    dx, dy, dz,
+    B0_vec_nT,
+    B0_unit,
+    chunk_obs: int = 64,
+):
+    
+    def _ensure_tensor_local(x, device, dtype):
+        if isinstance(x, torch.Tensor):
+            return x.to(device=device, dtype=dtype)
+        return torch.as_tensor(x, device=device, dtype=dtype)
 
-    B0_vec = B0_mag * torch.stack([
-        torch.cos(I) * torch.sin(D),
-        torch.cos(I) * torch.cos(D),
-        -torch.sin(I)
-    ])
+    if isinstance(model, torch.Tensor):
+        device = model.device
+        dtype = model.dtype
+    elif isinstance(B0_unit, torch.Tensor):
+        device = B0_unit.device
+        dtype = B0_unit.dtype
+    else:
+        device = torch.device("cpu")
+        dtype = torch.float64
 
-    B0_unit = B0_vec / B0_vec.norm()
+    model_t = _ensure_tensor_local(model, device=device, dtype=dtype).reshape(-1)         # (nC,)
+    cc_t    = _ensure_tensor_local(cell_centers, device=device, dtype=dtype).reshape(-1, 3)  # (nC,3)
 
-    # ---- magnetización ----
-    import math
-    mu0 = torch.as_tensor(4.0 * math.pi * 1e-7, device=device, dtype=dtype)
-    m = k_act * (B0_mag / mu0)
+    obs_t = _ensure_tensor_local(receiver_locations, device=device, dtype=dtype)
+    if obs_t.ndim != 2:
+        raise ValueError("receiver_locations debe ser 2D")
+    if obs_t.shape[1] == 2:
+        obs_t = torch.cat(
+            [obs_t, torch.zeros((obs_t.shape[0], 1), device=device, dtype=dtype)],
+            dim=1
+        )
+    elif obs_t.shape[1] != 3:
+        raise ValueError("receiver_locations debe tener 2 o 3 columnas")
 
-    return B0_vec, B0_unit, B0_mag, m
+    dx_t = _ensure_tensor_local(dx, device=device, dtype=dtype)
+    dy_t = _ensure_tensor_local(dy, device=device, dtype=dtype)
+    dz_t = _ensure_tensor_local(dz, device=device, dtype=dtype)
 
+    b0_vec_t  = _ensure_tensor_local(B0_vec_nT, device=device, dtype=dtype).reshape(3)
+    b0_unit_t = _ensure_tensor_local(B0_unit,   device=device, dtype=dtype).reshape(3)
 
-def compute_kernel(cell_centers: np.ndarray,
-                   receiver_location: np.ndarray,
-                   B0_unit: torch.Tensor,
-                   cell_volume: float,
-                   model: np.ndarray,
-                   device: torch.device,
-                   dtype: torch.dtype):
-  
-    cell_centers_t = torch.from_numpy(cell_centers).to(device, dtype)   # (nC,3)
-    receiver_location_t = torch.from_numpy(receiver_location).to(device, dtype)
-    model_t = torch.from_numpy(model).to(device, dtype)
+    active = torch.isfinite(model_t)
+    if not active.any():
+        raise RuntimeError("El modelo no tiene celdas activas (todas NaN/inf).")
 
-    active = ~torch.isnan(model_t) & (model_t != 0)
-    cc_act  = cell_centers_t[active]
-    vol_act = torch.full((cc_act.shape[0],), cell_volume, device=device, dtype=dtype) # Correct way to get volume for active cells
+    cc_v       = cc_t[active]     # (nCv,3)
+    chi_active = model_t[active]  # (nCv,)
 
-    mu0 = torch.as_tensor(4.0 * math.pi * 1e-7, device=device, dtype=dtype)
-    cm = -mu0 / (4.0 * math.pi)
+    nC  = model_t.numel()
+    nCv = chi_active.numel()
+    nObs = obs_t.shape[0]
 
-    rx = cc_act[:,0].unsqueeze(0) - receiver_location_t[:,0].unsqueeze(1)
-    ry = cc_act[:,1].unsqueeze(0) - receiver_location_t[:,1].unsqueeze(1)
-    rz = cc_act[:,2].unsqueeze(0) - receiver_location_t[:,2].unsqueeze(1)
+    def _select_sizes(h):
 
-    r2 = rx*rx + ry*ry + rz*rz
-    r  = torch.sqrt(r2)
-    r3 = r2 * r
-    r5 = r3 * r2
+        if isinstance(h, torch.Tensor) and h.ndim > 0:
+            h1 = h.reshape(-1)
+        else:
+            h1 = h
 
-    B0dotr = B0_unit[0]*rx + B0_unit[1]*ry + B0_unit[2]*rz
+        if h1.ndim == 0:
+            return h1.expand(nCv)
+        if h1.ndim == 1 and h1.numel() == nC:
+            return h1[active]
+        if h1.ndim == 1 and h1.numel() == nCv:
+            return h1
+        raise ValueError("dx/dy/dz deben ser escalares o vectores tamaño nC (o nCv).")
 
-    kernel_core = (1.0/r3) - 3.0*(B0dotr**2)/r5
+    dx_v = _select_sizes(dx_t)
+    dy_v = _select_sizes(dy_t)
+    dz_v = _select_sizes(dz_t)
 
-    kernel = cm * vol_act.unsqueeze(0) * kernel_core
+    hx = dx_v / 2.0
+    hy = dy_v / 2.0
+    hz = dz_v / 2.0
 
-    return kernel
+    corners = torch.tensor(
+        [[-1,-1,-1],[-1,-1, 1],[-1, 1,-1],[-1, 1, 1],
+         [ 1,-1,-1],[ 1,-1, 1],[ 1, 1,-1],[ 1, 1, 1]],
+        device=device, dtype=dtype
+    )
+    alt = torch.tensor([ 1, -1, -1,  1, -1,  1,  1, -1], device=device, dtype=dtype)
 
-# Kernel gravimetria
+    Xc = cc_v[:, 0]
+    Yc = cc_v[:, 1]
+    Zc = cc_v[:, 2]
+
+    bx, by, bz = b0_unit_t
+    Mx, My, Mz = b0_vec_t
+
+    K = torch.empty((nObs, nCv), device=device, dtype=dtype)
+
+    for i0 in range(0, nObs, chunk_obs):
+        i1 = min(i0 + chunk_obs, nObs)
+        obs_c = obs_t[i0:i1, :]  # (cObs,3)
+        cObs = obs_c.shape[0]
+
+        sx = obs_c[:, 0].detach().cpu().numpy().reshape(cObs, 1)
+        sy = obs_c[:, 1].detach().cpu().numpy().reshape(cObs, 1)
+        sz = obs_c[:, 2].detach().cpu().numpy().reshape(cObs, 1)
+
+        Xc_np = Xc.detach().cpu().numpy().reshape(1, nCv)
+        Yc_np = Yc.detach().cpu().numpy().reshape(1, nCv)
+        Zc_np = Zc.detach().cpu().numpy().reshape(1, nCv)
+
+        hx_np = hx.detach().cpu().numpy().reshape(1, nCv)
+        hy_np = hy.detach().cpu().numpy().reshape(1, nCv)
+        hz_np = hz.detach().cpu().numpy().reshape(1, nCv)
+
+        gxx = np.zeros((cObs, nCv), dtype=np.float64)
+        gxy = np.zeros((cObs, nCv), dtype=np.float64)
+        gxz = np.zeros((cObs, nCv), dtype=np.float64)
+        gyy = np.zeros((cObs, nCv), dtype=np.float64)
+        gyz = np.zeros((cObs, nCv), dtype=np.float64)
+        gzz = np.zeros((cObs, nCv), dtype=np.float64)
+
+        bx_f = float(bx.item()); by_f = float(by.item()); bz_f = float(bz.item())
+        Mx_f = float(Mx.item()); My_f = float(My.item()); Mz_f = float(Mz.item())
+
+        for k in range(8):
+            ox = float(corners[k, 0].item()) * hx_np
+            oy = float(corners[k, 1].item()) * hy_np
+            oz = float(corners[k, 2].item()) * hz_np
+            sgn = float(alt[k].item())
+
+            dxn = (Xc_np + ox) - sx
+            dyn = (Yc_np + oy) - sy
+            dzn = (Zc_np + oz) - sz
+
+            gxx += sgn * prism_fzz(dyn, dzn, dxn)
+            gxy += sgn * prism_fzx(dyn, dzn, dxn)
+            gxz += sgn * prism_fzy(dyn, dzn, dxn)
+
+            gyy += sgn * prism_fzz(dzn, dxn, dyn)
+            gyz += sgn * prism_fzy(dxn, dyn, dzn)
+            gzz += sgn * prism_fzz(dxn, dyn, dzn)
+
+        vals_x = bx_f*gxx + by_f*gxy + bz_f*gxz
+        vals_y = bx_f*gxy + by_f*gyy + bz_f*gyz
+        vals_z = bx_f*gxz + by_f*gyz + bz_f*gzz
+
+        cell_vals = vals_x*Mx_f + vals_y*My_f + vals_z*Mz_f
+        K_chunk = cell_vals / (4.0 * math.pi)
+
+        K[i0:i1, :] = torch.from_numpy(K_chunk).to(device=device, dtype=dtype)
+
+    return K, chi_active
 
 def calculateKernelGrav(density_contrast_model, mesh, receiver_locations) -> torch.Tensor:
     def _ensure_tensor_local(x, device="cpu", dtype=torch.float32):
@@ -158,12 +264,11 @@ def calculateKernelGrav(density_contrast_model, mesh, receiver_locations) -> tor
 
         dx_ = sx - Xp
         dy_ = sy - Yp
-        dz_ = Zp - sz  # Z positivo hacia arriba
-
+        dz_ = Zp - sz  
+        
         r2 = dx_*dx_ + dy_*dy_ + dz_*dz_
         inv_r3 = torch.pow(r2, -1.5)
 
         K = K + (GV8.unsqueeze(0) * dz_ * inv_r3)
 
     return K
-
