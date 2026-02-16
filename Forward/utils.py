@@ -2,6 +2,7 @@ import math
 import numpy as np
 import torch
 from geoana.kernels import prism_fzz, prism_fzx, prism_fzy
+from geoana.kernels import potential_field_prism as _pfp
 
 def geomagnetic_field(
     I_deg: float,
@@ -10,6 +11,30 @@ def geomagnetic_field(
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
 ):
+    
+    """
+    Construye el vector del campo geomagnético principal B0 a partir de
+    inclinación (I), declinación (D) y amplitud, y retorna también su dirección
+    unitaria.
+
+    Parámetros
+    ----------
+    I_deg : float
+        Inclinación en grados.
+    D_deg : float
+        Declinación en grados.
+    amplitude_nT : float
+        Magnitud del campo (en nT).
+    device, dtype :
+        Dispositivo y tipo numérico para los tensores.
+
+    Retorna
+    -------
+    B0_vec_nT : torch.Tensor (3,)
+        Vector B0 en nT: [Bx, By, Bz].
+    B0_unit : torch.Tensor (3,)
+        Vector unitario en la dirección de B0.
+    """
 
     device = torch.device(device)
     I = torch.deg2rad(torch.tensor(I_deg, device=device, dtype=dtype))
@@ -35,6 +60,46 @@ def calculateKernelMag(
     B0_unit,
     chunk_obs: int = 64,
 ):
+    
+    """
+    Calcula el kernel (matriz de sensibilidad) magnético para un conjunto de
+    prismas rectangulares 3D, usando integrales analíticas tipo “prisma”
+    (prism_fzz, prism_fzx, prism_fzy) y sumas por inclusión–exclusión en las 8
+    esquinas del prisma.
+
+    Este kernel implementa una forma estándar para respuesta tipo “campo total”
+    proyectada en la dirección B0_unit, con una dependencia de amplitud dada por
+    B0_vec_nT. Las unidades del resultado quedan coherentes con las unidades de
+    B0_vec_nT y con la convención de las funciones prism_* (incluye el factor
+    1/(4π) tal como está en el código).
+
+    Parámetros
+    ----------
+    model : array-like o torch.Tensor (nC,)
+        Susceptibilidad (o parámetro escalar) por celda. NaN/inf -> celda inactiva.
+    cell_centers : array-like o torch.Tensor (nC,3)
+        Centros (x,y,z) de cada celda.
+    receiver_locations : array-like o torch.Tensor (nObs,2) o (nObs,3)
+        Receptores; si es 2D se asume z=0.
+    dx, dy, dz : escalar o vector
+        Tamaños de celda. Pueden ser:
+        - escalares,
+        - vectores tamaño nC (malla completa), o
+        - vectores tamaño nCv (ya filtrados a activas).
+    B0_vec_nT : array-like o torch.Tensor (3,)
+        Vector B0 (no unitario), típicamente en nT.
+    B0_unit : array-like o torch.Tensor (3,)
+        Dirección unitaria de B0.
+    chunk_obs : int
+        Número de observaciones procesadas por bloque (controla memoria).
+
+    Retorna
+    -------
+    K : torch.Tensor (nObs, nCv)
+        Kernel para celdas activas (columnas = celdas activas, filas = receptores).
+    chi_active : torch.Tensor (nCv,)
+        Valores del modelo filtrados a celdas activas, en el mismo orden de K.
+    """
     
     def _ensure_tensor_local(x, device, dtype):
         if isinstance(x, torch.Tensor):
@@ -178,18 +243,43 @@ def calculateKernelMag(
 
     return K, chi_active
 
+
 def calculateKernelGrav(
     density_contrast_model,
     mesh,
     receiver_locations,
-    method: str = "approx",
     chunk_cells: int = 2000,
 ) -> torch.Tensor:
+
+    """
+    Calcula el kernel (matriz de sensibilidad) de gravimetría para una malla 3D de
+    prismas rectangulares usando la formulación exacta de GeoAna.
+
+    Parámetros
+    ----------
+    density_contrast_model : array-like o torch.Tensor (nC,)
+        Contraste de densidad por celda; NaN = celda inactiva.
+    mesh : dict
+        Debe incluir: "cell_centers" (nC,3) y "dx","dy","dz" (escalares o vectores).
+    receiver_locations : array-like o torch.Tensor (nObs,2) o (nObs,3)
+        Coordenadas de receptores; si es 2D se asume z=0.
+    chunk_cells : int
+        Número de celdas activas por bloque para controlar memoria.
+
+    Retorna
+    -------
+    K : torch.Tensor (nObs, nCv)
+        Kernel para las celdas activas.
+    centers_v : torch.Tensor (nCv,3)
+        Centros de las celdas activas.
+    """
+
     def _ensure_tensor_local(x, device="cpu", dtype=torch.float32):
         if isinstance(x, torch.Tensor):
             return x.to(device=device, dtype=dtype)
         return torch.as_tensor(x, device=device, dtype=dtype)
 
+    # --- device/dtype coherentes con el modelo
     if isinstance(density_contrast_model, torch.Tensor):
         device = density_contrast_model.device
         dtype  = density_contrast_model.dtype
@@ -204,7 +294,7 @@ def calculateKernelGrav(
         raise RuntimeError("El modelo no tiene celdas válidas (todas son NaN).")
 
     centers = _ensure_tensor_local(mesh["cell_centers"], device=device, dtype=dtype)
-    centers_v = centers[valid_mask]
+    centers_v = centers[valid_mask]  # solo celdas activas
 
     obs = _ensure_tensor_local(receiver_locations, device=device, dtype=dtype)
     if obs.ndim != 2:
@@ -238,58 +328,10 @@ def calculateKernelGrav(
     dy_v = _select_sizes(dy)
     dz_v = _select_sizes(dz)
 
-    V_v = dx_v * dy_v * dz_v
-    GV8 = G * (V_v / 8.0)
-
-    qx, qy, qz = dx_v / 4.0, dy_v / 4.0, dz_v / 4.0
-
-    signs = torch.tensor(
-        [[+1,+1,+1],[+1,+1,-1],[+1,-1,+1],[+1,-1,-1],
-         [-1,+1,+1],[-1,+1,-1],[-1,-1,+1],[-1,-1,-1]],
-        device=device, dtype=dtype
-    )
-
-    Xc = centers_v[:, 0].unsqueeze(0)
-    Yc = centers_v[:, 1].unsqueeze(0)
-    Zc = centers_v[:, 2].unsqueeze(0)
-
-    sx = obs_xyz[:, 0].unsqueeze(1)
-    sy = obs_xyz[:, 1].unsqueeze(1)
-    sz = obs_xyz[:, 2].unsqueeze(1)
-
-    if method == "approx":
-        K = torch.zeros((obs_xyz.shape[0], nCv), device=device, dtype=dtype)
-
-        for s in range(8):
-            ox = (signs[s, 0] * qx).unsqueeze(0)
-            oy = (signs[s, 1] * qy).unsqueeze(0)
-            oz = (signs[s, 2] * qz).unsqueeze(0)
-
-            Xp = Xc + ox
-            Yp = Yc + oy
-            Zp = Zc + oz
-
-            dx_ = sx - Xp
-            dy_ = sy - Yp
-            dz_ = Zp - sz
-
-            r2 = dx_ * dx_ + dy_ * dy_ + dz_ * dz_
-            inv_r3 = torch.pow(r2, -1.5)
-
-            K = K + (GV8.unsqueeze(0) * dz_ * inv_r3)
-
-        return K
-
-    if method != "exact":
-        raise ValueError("method must be 'approx' or 'exact'")
-
-    # Exact prism kernel using geoana's prism_fz (matches SimPEG integral)
-    from geoana.kernels import potential_field_prism as _pfp
-
-    # Convert to numpy for geoana ufuncs
-    Xc_np = Xc.detach().cpu().numpy().reshape(-1)
-    Yc_np = Yc.detach().cpu().numpy().reshape(-1)
-    Zc_np = Zc.detach().cpu().numpy().reshape(-1)
+    # --- prism bounds por celda (en numpy)
+    Xc_np = centers_v[:, 0].detach().cpu().numpy()
+    Yc_np = centers_v[:, 1].detach().cpu().numpy()
+    Zc_np = centers_v[:, 2].detach().cpu().numpy()
 
     dx_np = dx_v.detach().cpu().numpy()
     dy_np = dy_v.detach().cpu().numpy()
@@ -302,22 +344,23 @@ def calculateKernelGrav(
     z1 = Zc_np - dz_np / 2.0
     z2 = Zc_np + dz_np / 2.0
 
-    sx_np = obs_xyz[:, 0].detach().cpu().numpy()
-    sy_np = obs_xyz[:, 1].detach().cpu().numpy()
-    sz_np = obs_xyz[:, 2].detach().cpu().numpy()
+    sx = obs_xyz[:, 0].detach().cpu().numpy()
+    sy = obs_xyz[:, 1].detach().cpu().numpy()
+    sz = obs_xyz[:, 2].detach().cpu().numpy()
 
     K = torch.zeros((obs_xyz.shape[0], nCv), device=device, dtype=dtype)
     G_np = float(G.detach().cpu().numpy())
 
+    # --- exact prism kernel (geoana) por chunks
     for i0 in range(0, nCv, chunk_cells):
         i1 = min(i0 + chunk_cells, nCv)
 
-        x1d = x1[i0:i1][None, :] - sx_np[:, None]
-        x2d = x2[i0:i1][None, :] - sx_np[:, None]
-        y1d = y1[i0:i1][None, :] - sy_np[:, None]
-        y2d = y2[i0:i1][None, :] - sy_np[:, None]
-        z1d = z1[i0:i1][None, :] - sz_np[:, None]
-        z2d = z2[i0:i1][None, :] - sz_np[:, None]
+        x1d = x1[i0:i1][None, :] - sx[:, None]
+        x2d = x2[i0:i1][None, :] - sx[:, None]
+        y1d = y1[i0:i1][None, :] - sy[:, None]
+        y2d = y2[i0:i1][None, :] - sy[:, None]
+        z1d = z1[i0:i1][None, :] - sz[:, None]
+        z2d = z2[i0:i1][None, :] - sz[:, None]
 
         term = (
             _pfp.prism_fz(x2d, y2d, z2d)
@@ -333,4 +376,4 @@ def calculateKernelGrav(
         K_chunk = (G_np * term).astype(np.float64, copy=False)
         K[:, i0:i1] = torch.from_numpy(K_chunk).to(device=device, dtype=dtype)
 
-    return K
+    return K, centers_v

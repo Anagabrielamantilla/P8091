@@ -2,6 +2,29 @@ import torch, math
 import numpy as np
 
 def grav3D_8091(density_contrast_model, K: torch.Tensor, to_mgal: bool = True):
+  
+    """
+    Modela la respuesta gravimétrica a partir de un kernel K y un modelo de
+    contraste de densidad, ignorando celdas inactivas (NaN).
+
+    Asume que K fue construido para las celdas activas en el mismo orden que
+    resulta al filtrar `density_contrast_model` con `~isnan`.
+
+    Parámetros
+    ----------
+    density_contrast_model (kg/m^3): array-like o torch.Tensor (nC,)
+        Contraste de densidad por celda; NaN = celda inactiva.
+    K : torch.Tensor (nObs, nCv)
+        Kernel para celdas activas (nCv = #celdas no-NaN).
+    to_mgal : bool, default=True
+        Si True convierte de m/s^2 a mGal (multiplica por 1e5).
+
+    Retorna
+    -------
+    gz : torch.Tensor (nObs,)
+        Respuesta modelada (m/s^2 o mGal según `to_mgal`).
+    """
+    
     def _ensure_tensor_local(x, device="cpu", dtype=torch.float32):
         if isinstance(x, torch.Tensor):
             return x.to(device=device, dtype=dtype)
