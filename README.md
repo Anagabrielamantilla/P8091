@@ -31,6 +31,18 @@ Se recomienda utilizar **Anaconda** para la gestión de dependencias y entornos.
    ```bash
    git clone https://github.com/tu_usuario/045-2025.git
 
+## 🗺️ Correspondencia de modelos geológicos
+
+| Modelo | Zona volcánica asociada | Descripción breve |
+|:------:|--------------------------|-------------------|
+| **Model A** | **Volcán Cerro Machín** | Modelo 3D construido en el marco del **P8091** a partir de la digitalización de secciones transversales de un modelo geológico de **densidad** obtenido de la inversión gravimétrica reportada por **Beltrán (2020)**. Las secciones fueron interpoladas en **GemPy**, representando capas volcánicas someras, un conducto volcánico, una cámara magmática profunda y un basamento de mayor densidad. |
+| **Model B** | **Volcán Cerro Machín** | Modelo 3D desarrollado en el marco del **Proyecto 8091** mediante la digitalización de **7 secciones transversales y paralelas** de un modelo geológico de **resistividad** propuesto por **Herrera (2020)** a partir de inversión magnetotelúrica. Las secciones fueron interpoladas en **GemPy**, obteniendo una representación de cuerpos volcánicos someros, conducto volcánico y zonas de recarga. |
+| **Model C** | **Volcán Puracé** | Modelo 3D generado en el marco del **P8091** a partir de la digitalización de **2 secciones transversales** derivadas de un modelo geológico de **densidad** obtenido de datos gravimétricos y magnéticos por **Ponce et al. (2024)**. La interpolación en **GemPy** permitió representar capas volcánicas someras, zonas de alteración, un conducto volcánico y una cámara magmática profunda. |
+| **Model D** | **Volcán Azufral** | Modelo 3D construido en el marco del **P8091** mediante la digitalización de **9 secciones transversales** de un modelo geológico de **densidad** obtenido por **Ponce (2013)** a partir de la interpretación de anomalías de campos potenciales. Las secciones fueron interpoladas en **GemPy**, representando capas volcánicas someras, estructuras volcánicas, áreas de alteración hidrotermal y capas sello. |
+| **Model E** | **Volcán Cerro Machín** | Modelo 3D de **contraste de densidad y susceptibilidad magnética** tomado de **Moreno et al. (2025)**, obtenido mediante la inversión conjunta de datos de **gravimetría y magnetometría** adquiridos por **Beltrán (2020)**. El modelo representa capas volcánicas someras, un conducto volcánico conectado con una cámara magmática profunda y un basamento de mayor densidad. |
+
+---
+
 ## 📂 Organización del Repositorio
 
 ```text
