@@ -30,6 +30,22 @@ Se recomienda utilizar **Anaconda** para la gestión de dependencias y entornos.
 1. Clona este repositorio:
    ```bash
    git clone https://github.com/tu_usuario/045-2025.git
+   ```
+2. Crea y activa un entorno con Python 3.10 o superior (reemplaza `<nombre-entorno>` por el nombre que prefieras):
+   ```bash
+   conda create -n <Nombre-entorno> python=3.10
+   conda activate <Nombre-entorno>
+   ```
+
+3. Instala las dependencias (ejecutar dentro de la carpeta del repositorio):
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Instala el paquete del proyecto en modo editable (necesario para que los imports de `Forward` funcionen desde cualquier notebook, sin importar su ubicación):
+   ```bash
+   pip install -e .
+   ```
 
 ## 🗺️ Correspondencia de modelos geológicos
 

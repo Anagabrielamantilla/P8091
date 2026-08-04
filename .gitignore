@@ -1,0 +1,14 @@
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+**/.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Paquete editable (setuptools/pip)
+*.egg-info/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
