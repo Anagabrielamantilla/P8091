@@ -61,17 +61,17 @@ def compute_mt_E_fields(mesh, sigma, receivers, frequencies, mu=None):
         primary_ex, primary_ey = _primary_fields(mesh, omega, sigma_background)
         solver_data = _prepare_solver(A, bc_mask)
 
-        # RHS
+        # Lado derecho del sistema (RHS)
         delta_sigma = np.zeros(mesh.nC)
-        delta_sigma[below_surface] = sigma[below_surface] - sigma_background # simpeg trabaja con la diferencia de sigma. Sergio
+        delta_sigma[below_surface] = sigma[below_surface] - sigma_background # simpeg trabaja con la diferencia de sigma
         Mdelta_sigma = mesh.get_edge_inner_product(delta_sigma)
         
-        # Ex polarization
-        rhs_ex = -1j * omega * (Mdelta_sigma @ primary_ex) # fuente de simpeg. Sergio
+        # Polarización Ex
+        rhs_ex = -1j * omega * (Mdelta_sigma @ primary_ex) # fuente de simpeg
         ex_total = primary_ex + _solve_secondary(rhs_ex, solver_data)
 
-        # Ey polarization
-        rhs_ey = -1j * omega * (Mdelta_sigma @ primary_ey) # fuente de simpeg. Sergio
+        # Polarización Ey
+        rhs_ey = -1j * omega * (Mdelta_sigma @ primary_ey) # fuente de simpeg
         ey_total = primary_ey + _solve_secondary(rhs_ey, solver_data)
 
         Efull[ifreq,0,:] = ex_total
