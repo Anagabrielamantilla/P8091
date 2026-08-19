@@ -1,9 +1,0 @@
-# Paquetes necesarios para ejecutar Tutorial_MT3D.ipynb
-#   pip install -r requirements.txt
-numpy
-scipy
-discretize
-matplotlib
-geoana      # lo importa Forward/utils.py
-torch       # lo importa Forward/utils.py
-# simpeg    # solo para los cuadernos de comparación en Examples/Modelling/Toys/MT_Toy6/
