@@ -3,6 +3,9 @@
 */.ipynb_checkpoints/*
 **/.ipynb_checkpoints/
 
+# Claude
+.claude/
+
 # VS Code
 .vscode/
 
