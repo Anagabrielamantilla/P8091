@@ -2,6 +2,11 @@ import math
 import numpy as np
 import scipy.sparse.linalg as spla
 import torch
+import discretize
+import scipy.sparse as sp
+from discretize.utils import volume_average
+
+from Forward.solvers import make_solver
 from geoana.kernels import prism_fzz, prism_fzx, prism_fzy
 from geoana.kernels import potential_field_prism as _pfp
 import numpy as np
@@ -797,7 +802,7 @@ def _prepare_solver(A, bc_mask):
     fixed = bc_mask
     Aii = A[free][:, free].tocsc()
     Aib = A[free][:, fixed]
-    factor = spla.factorized(Aii)
+    factor = make_solver(Aii)
     return free, fixed, factor, Aib
 
 
@@ -822,37 +827,193 @@ def _solve_secondary(rhs, solver_data):
     return sol
 
 
-def _primary_fields(mesh, omega, sigma_background):
+def _layered_1d_efield(nodes_z, sigma_1d, omega, mu=mu0):
     """
-    Calcula el campo eléctrico primario para ondas planas polarizadas en la dirección x, y.
-    
-    Parámetros
-    mesh = recibe la grilla 3D del modelo,
-    omega = frecuencia angular, 
-    sigma_background = conductividad de referencia.
-    
+    Campo electrico magnetotelurico 1D E(z) evaluado en los nodos de la malla
+    vertical, para un modelo estratificado ``sigma_1d`` (una conductividad por
+    celda en z, ordenadas de abajo hacia arriba).
+
+    Convenio armonico e^{+i omega t} y eje z positivo hacia arriba, de modo que
+    la ecuacion de difusion es d2E/dz2 = i omega mu sigma E y la onda que decae
+    hacia abajo es exp(+k z) con k = sqrt(i omega mu sigma), Re(k) > 0.
+
+    En cada capa
+
+        E(z)  = A e^{ k (z - z_j)} + B e^{-k (z - z_j)}
+        H(z)  = -Y ( A e^{ k (z-z_j)} - B e^{-k (z-z_j)} ),   Y = k / (i omega mu)
+
+    donde H es la componente horizontal ortogonal a E (par Ex/Hy). El semiespacio
+    inferior solo admite la onda descendente (B = 0) y la propagacion se hace
+    hacia arriba imponiendo continuidad de E y H en cada interfaz. El factor
+    e^{+k h} se extrae en un acumulador logaritmico para no desbordar cuando el
+    espesor de la capa supera varias veces el skin depth.
+
+    El perfil se devuelve normalizado a E = 1 en el nodo superior de la malla.
+
+    Parametros
+    nodes_z    = coordenadas z de los nodos (nz + 1, crecientes),
+    sigma_1d   = conductividad por celda (nz),
+    omega      = frecuencia angular,
+    mu         = permeabilidad magnetica.
+
     Retorna
-    ex_pol() = campo eléctrico primario polarizado en dirección x, 
-    ey_pol() = campo eléctrico primario polarizado en dirección y.
+    E = campo electrico en los nodos (nz + 1, complejo).
     """
-    
-    k_wave = (1 + 1j) / np.sqrt(2 / (omega * mu0 * sigma_background))
+    nodes_z = np.asarray(nodes_z, dtype=float)
+    sigma_1d = np.asarray(sigma_1d, dtype=float)
+    nz = sigma_1d.size
+    if nodes_z.size != nz + 1:
+        raise ValueError("nodes_z debe tener un elemento mas que sigma_1d")
 
-    def ex_pol():
-        depth = mesh.edges_x[:, 2]
-        ex_primary = np.exp(k_wave * depth)
-        ey_primary = np.zeros(mesh.nEy, dtype=complex)
-        ez_primary = np.zeros(mesh.nEz, dtype=complex)
-        return np.r_[ex_primary, ey_primary, ez_primary]
+    h = np.diff(nodes_z)
+    k = np.sqrt(1j * omega * mu * sigma_1d)      # rama principal: Re(k) > 0
+    Y = k / (1j * omega * mu)                    # admitancia intrinseca
 
-    def ey_pol():
-        depth = mesh.edges_y[:, 2]
-        ex_primary = np.zeros(mesh.nEx, dtype=complex)
-        ey_primary = np.exp(k_wave * depth)
-        ez_primary = np.zeros(mesh.nEz, dtype=complex)
-        return np.r_[ex_primary, ey_primary, ez_primary]
+    E_hat = np.zeros(nz + 1, dtype=complex)
+    H_hat = np.zeros(nz + 1, dtype=complex)
+    log_scale = np.zeros(nz + 1, dtype=complex)
 
-    return ex_pol(), ey_pol()
+    # Semiespacio inferior: solo onda descendente, amplitud unidad
+    E_hat[0] = 1.0
+    H_hat[0] = -Y[0]
+
+    for j in range(nz):
+        A = 0.5 * (E_hat[j] - H_hat[j] / Y[j])
+        B = 0.5 * (E_hat[j] + H_hat[j] / Y[j])
+        decay = np.exp(-2.0 * k[j] * h[j])       # |decay| <= 1
+        E_hat[j + 1] = A + B * decay
+        H_hat[j + 1] = -Y[j] * (A - B * decay)
+        log_scale[j + 1] = log_scale[j] + k[j] * h[j]
+
+    # Normalizacion al nodo superior. Re(log_scale - log_scale[-1]) <= 0, asi que
+    # la exponencial esta acotada.
+    return E_hat * np.exp(log_scale - log_scale[-1]) / E_hat[-1]
+
+
+def _background_1d(mesh, sigma, sigma_primary=None):
+    """
+    Construye el modelo de fondo (primario) estratificado sobre el que se calcula
+    el campo primario.
+
+    El metodo primario/secundario exige que el campo primario resuelva de forma
+    EXACTA el modelo de fondo. Por eso el fondo debe ser 1D (solo funcion de z) y
+    debe usarse el MISMO modelo tanto para el campo primario como para la fuente
+    ``-i omega M_{sigma - sigma_p} e_p``. Esta funcion devuelve las dos versiones
+    consistentes entre si.
+
+    Parametros
+    mesh          = malla 3D,
+    sigma         = modelo de conductividad verdadero (nC),
+    sigma_primary = fondo. ``None`` -> semiespacio con el valor mas frecuente
+                    bajo la superficie, conservando las celdas de aire; escalar
+                    -> ese semiespacio, conservando las celdas de aire; arreglo
+                    (nC) -> se usa tal cual.
+
+    Retorna
+    sigma_1d = conductividad por capa en z (nCz),
+    sigma_p  = el mismo fondo expandido de vuelta a las nC celdas.
+    """
+    sigma = np.asarray(sigma, dtype=float)
+
+    # El aire se identifica por su conductividad, no por z > 0: los modelos con
+    # topografia tienen celdas de aire por debajo de z = 0 y marcarlas como
+    # terreno mete un contraste espurio en el fondo.
+    sigma_air = float(sigma.min())
+    air = sigma <= sigma_air * (1.0 + 1e-6)
+
+    if sigma_primary is None or np.isscalar(sigma_primary):
+        if sigma_primary is None:
+            below = sigma[~air]
+            valores, cuentas = np.unique(below, return_counts=True)
+            sigma_halfspace = float(valores[np.argmax(cuentas)])
+        else:
+            sigma_halfspace = float(sigma_primary)
+        sigma_p3d = np.where(air, sigma_air, sigma_halfspace)
+    else:
+        sigma_p3d = np.asarray(sigma_primary, dtype=float)
+        if sigma_p3d.size != mesh.nC:
+            raise ValueError("sigma_primary debe ser escalar o de tamano mesh.nC")
+
+    # Promedio en volumen de log(sigma) sobre la malla vertical, y vuelta a 3D:
+    # el campo primario resuelve exactamente ese modelo 1D, no el 3D de partida.
+    mesh1d = discretize.TensorMesh([mesh.h[-1]], [mesh.x0[-1]])
+    mesh_col = discretize.TensorMesh(
+        [[mesh.nodes_x[-1] - mesh.x0[0]], [mesh.nodes_y[-1] - mesh.x0[1]], mesh.h[-1]],
+        x0=mesh.x0,
+    )
+    sigma_1d = np.exp(volume_average(mesh, mesh_col, np.log(sigma_p3d)))
+    sigma_p = np.exp(volume_average(mesh_col, mesh, np.log(sigma_1d)))
+    return sigma_1d, sigma_p
+
+
+def _primary_fields(mesh, omega, sigma_1d, mu=mu0):
+    """
+    Calcula el campo electrico primario de onda plana para las polarizaciones x e y
+    sobre el modelo de fondo estratificado ``sigma_1d``.
+
+    Dos diferencias con la version anterior (``exp(k z)`` con un unico numero de
+    onda para todo el dominio):
+
+    1. El aire se trata con su propia conductividad. Antes el campo primario
+       crecia como e^{z/delta} por encima de la superficie -- a 100 Hz y 5 km de
+       aire eso son cuatro ordenes de magnitud de campo inventado -- cuando el
+       campo MT en el aire es practicamente uniforme.
+
+    2. El perfil se obtiene resolviendo el problema 1D DISCRETO, no el analitico.
+       La descomposicion primario/secundario
+
+           A_h(sigma) e_s = -i omega M_{sigma - sigma_p} e_p ,   e = e_p + e_s
+
+       solo es exacta si ``A_h(sigma_p) e_p = 0`` en el sentido DISCRETO. Un
+       perfil analitico satisface la ecuacion continua pero deja un residuo
+       O(h^2) en la malla, y ese residuo se filtra al campo total. El perfil
+       analitico se sigue usando, pero solo para fijar los valores de frontera
+       (nodo superior e inferior) del sistema 1D.
+
+    Parametros
+    mesh     = malla 3D del modelo,
+    omega    = frecuencia angular,
+    sigma_1d = conductividad del fondo por capa en z (nCz), de abajo hacia arriba,
+    mu       = permeabilidad magnetica.
+
+    Retorna
+    ex_pol = campo primario polarizado en x (nE),
+    ey_pol = campo primario polarizado en y (nE).
+    """
+    mesh_1d = discretize.TensorMesh([mesh.h[-1]], [mesh.x0[-1]])
+
+    # Operador 1D analogo a C^T M_{1/mu} C + i omega M_sigma
+    G = mesh_1d.nodal_gradient
+    M_mu = sp.diags(mesh_1d.cell_volumes * (1.0 / mu))
+    M_sigma = mesh_1d.get_face_inner_product(sigma_1d)
+    A_1d = (G.T @ M_mu @ G + 1j * omega * M_sigma).tocsc()
+
+    # Frontera (nodo inferior y superior) tomada de la solucion analitica
+    analitico = _layered_1d_efield(mesh_1d.nodes_x, sigma_1d, omega, mu)
+    bc = np.r_[analitico[0], analitico[-1]]
+
+    # A_ii e_i + A_io e_b = 0  ->  e_i = -A_ii^{-1} A_io e_b
+    A_ii = A_1d[1:-1, 1:-1].tocsc()
+    A_io = A_1d[1:-1][:, [0, -1]]
+    e_interior = spla.spsolve(A_ii, -(A_io @ bc))
+
+    E_nodes = np.r_[bc[0], e_interior, bc[1]]
+
+    # Las aristas x e y de una TensorMesh se situan en coordenadas z nodales
+    idx_x = np.searchsorted(mesh.nodes_z, mesh.edges_x[:, 2])
+    idx_y = np.searchsorted(mesh.nodes_z, mesh.edges_y[:, 2])
+
+    ex_pol = np.r_[
+        E_nodes[idx_x],
+        np.zeros(mesh.nEy, dtype=complex),
+        np.zeros(mesh.nEz, dtype=complex),
+    ]
+    ey_pol = np.r_[
+        np.zeros(mesh.nEx, dtype=complex),
+        E_nodes[idx_y],
+        np.zeros(mesh.nEz, dtype=complex),
+    ]
+    return ex_pol, ey_pol
 
     
 def apparent_resistivity(Zcomp, frequencies):
@@ -980,7 +1141,8 @@ def compute_sigma_gradient_Z(
     return grad
 
 
-def cost_and_gradient_log_Z(m, mesh, receivers, frequency_list, Z_obs):
+def cost_and_gradient_log_Z(m, mesh, receivers, frequency_list, Z_obs,
+                            sigma_primary=None):
     """
     Calcula el gradiente en la dirección del logaritmo de sigma y entrega su valor junto con la función de costo
     
@@ -1011,7 +1173,8 @@ def cost_and_gradient_log_Z(m, mesh, receivers, frequency_list, Z_obs):
         mesh,
         sigma,
         receivers,
-        frequency_list
+        frequency_list,
+        sigma_primary=sigma_primary
     )
 
     """
@@ -1216,7 +1379,8 @@ def cost_and_gradient(sigma, mesh, receivers, frequency_list, E_obs):
 
     return phi, grad
 
-def cost_and_gradient_Z(sigma, mesh, receivers, frequency_list, Z_obs):
+def cost_and_gradient_Z(sigma, mesh, receivers, frequency_list, Z_obs,
+                        sigma_primary=None):
     """
     Calcula el gradiente del tensor de impedancias en la dirección de sigma y entrega su valor junto con la función de costo
     
@@ -1246,7 +1410,8 @@ def cost_and_gradient_Z(sigma, mesh, receivers, frequency_list, Z_obs):
         mesh,
         sigma,
         receivers,
-        frequency_list
+        frequency_list,
+        sigma_primary=sigma_primary
     )
 
     """
