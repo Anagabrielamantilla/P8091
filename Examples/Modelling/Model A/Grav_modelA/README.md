@@ -1,4 +1,4 @@
-# Grav_modelA – Forward Gravity (Torch) | Cerro Machín
+# Grav_modelA – Forward Gravity (Torch) | Volcán Cerro Machín
 
 Este ejemplo ejecuta un **forward de gravedad (gz)** para el caso de estudio del **Cerro Machín**, usando un operador implementado en **PyTorch**.
 

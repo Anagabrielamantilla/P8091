@@ -6,16 +6,16 @@ El experimento **Toy5** corresponde a un modelo sintético tridimensional emplea
 
 El flujo general es:
 
-- Construir la malla tridimensional.
-- Definir el modelo de conductividad.
-- Definir las frecuencias de simulación.
-- Definir la ubicación de los receptores.
-- Calcular el tensor de impedancias mediante `compute_mt_impedance_tipper`.
-- Calcular el tipper.
+- Cargar la malla desde `../../../../models/Toy5/mesh_Toy5_MT.json`.
+- Cargar el modelo de conductividad desde `../../../../models/Toy5/model_Toy5_MT.npy`.
+- Definir las frecuencias de simulación (`np.logspace(-4, 2, 7)`).
+- Definir la ubicación del receptor.
+- Calcular el tensor de impedancias y el tipper mediante `compute_mt_impedance_tipper`.
 - Guardar los resultados en:
     - `impedance_3D.npy`
     - `tipper_3D.npy`
-- Visualizar las respuestas magnetotelúricas simuladas.
+- Calcular resistividad y fase aparente (`apparent_resistivity`, `phase_deg`) para las cuatro componentes del tensor de impedancias.
+- Visualizar las respuestas magnetotelúricas simuladas (impedancia y tipper: magnitud, fase, parte real e imaginaria).
 
 ## Requisitos
 
