@@ -3,9 +3,11 @@
 Comparación del **operador magnetotelúrico propio de este repositorio** (`Forward/MT3DZ.py`)
 contra el modelamiento MT de **SimPEG** (`NSEM.Simulation3DPrimarySecondary`).
 
-El experimento **Toy6** corre las dos soluciones sobre exactamente la misma malla, el mismo modelo
-3D de conductividad, las mismas frecuencias y el mismo receptor, de modo que el tensor de
-impedancias `Z` y el tipper `T` son directamente comparables.
+El experimento **Toy6** corresponde a un modelo sintético tridimensional de conductividad sobre el que se contrastan las dos
+formulaciones.
+Las dos soluciones se corren sobre exactamente la misma malla, el mismo modelo de conductividad,
+las mismas frecuencias y el mismo receptor, de modo que el tensor de impedancias `Z` y el tipper
+`T` son directamente comparables.
 
 ## Configuración del experimento
 
@@ -13,7 +15,7 @@ impedancias `Z` y el tipper `T` son directamente comparables.
 |---|---|
 | Malla | `../../../../models/Toy6/mesh_Toy6_MT.json` — `TensorMesh` 30 × 30 × 30 (27 000 celdas) |
 | Modelo de conductividad | `../../../../models/Toy6/model_Toy6_MT.npy` — σ en S/m, celdas de aire = 1e-8 |
-| Frecuencias | `np.logspace(-4, 2, 3)` → 1e-4, 1e-1, 1e2 Hz |
+| Frecuencias | `np.logspace(-4, 2, 3)` → 1e-4, 1e-1 y 1e2 Hz |
 | Receptor | `(0.0, 0.0, -53.7)` m |
 | Fondo para SimPEG | semiespacio de 2e-3 S/m (campo primario) |
 
@@ -24,11 +26,12 @@ Se ejecutan en este orden:
 1. **`MT_ModelToy6_MT3DZ.ipynb`** — modelamiento directo con el operador propio
    (`Forward/MT3DZ.py` → `compute_mt_responses`).
    Guarda `impedance_MT3DZ_Toy6.npy`, `tipper_MT3DZ_Toy6.npy` y la figura `MT3DZ_Toy6.png`.
-2. **`MT_ModelToy6_SimPEG.ipynb`** — modelamiento directo con SimPEG.
-   Guarda `impedance_SimPEG_Toy6.npy`, `tipper_SimPEG_Toy6.npy` y la figura `SimPEG_Toy6.png`.
-3. **`MT_Model_MT3DZ_vs_SimPEG.ipynb`** — comparación. No vuelve a correr ningún forward: carga los
-   cuatro `.npy`, superpone las curvas, calcula la diferencia relativa y las métricas
-   MAE / RMSE / MAPE. Guarda la figura `MT3DZ_vs_SimPEG_Toy6.png`.
+2. **`MT_ModelToy6_SimPEG.ipynb`** — modelamiento directo con SimPEG y, al final, la
+   **comparación** contra el operador. La sección de comparación no vuelve a correr ningún forward:
+   carga los cuatro `.npy`, superpone las curvas, calcula la diferencia relativa y las métricas
+   MAE / RMSE / MAPE.
+   Guarda `impedance_SimPEG_Toy6.npy`, `tipper_SimPEG_Toy6.npy` y las figuras `SimPEG_Toy6.png`
+   y `MT3DZ_vs_SimPEG_Toy6.png`.
 
 ## Respuestas guardadas
 
@@ -65,15 +68,8 @@ como línea a guiones encima: donde SimPEG cae dentro de la banda, las dos soluc
 
 ## Requisitos
 
-Python 3.11 con `numpy`, `scipy`, `discretize`, `matplotlib` y `simpeg`:
+Python ≥ 3.10 con `numpy`, `scipy`, `discretize`, `matplotlib` y `simpeg`:
 
 ```bash
 pip install numpy scipy discretize matplotlib simpeg
 ```
-
-## Nota sobre `_trash/`
-
-`_trash/` guarda las versiones anteriores de los cuadernos, las respuestas intermedias
-(`*_New_*`, `*_Toy6` del operador viejo, campos `Efull`/`Hfull`) y las figuras que quedaron
-obsoletas en la limpieza de la carpeta. Está en `.gitignore` y no se sube al repositorio; se puede
-borrar cuando ya no haga falta.
